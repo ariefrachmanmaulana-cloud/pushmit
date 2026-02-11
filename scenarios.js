@@ -1,24 +1,23 @@
 export const getScenarios = (type) => {
     const scenarios = {
-        performance: { vus: 1, duration: '30s' }, // Ditambah ke 30 detik agar baseline stabil
-        load: { vus: 10, duration: '1m' },        // Minimal 1 menit untuk melihat beban normal
+        performance: { vus: 5, duration: '30s' },
+        load: { vus: 10, duration: '20s' },
         stress: [
-            { duration: '30s', target: 20 },      // Ramp-up
-            { duration: '1m', target: 20 },       // Stay di beban tinggi
-            { duration: '30s', target: 0 },       // Ramp-down
+            { duration: '30s', target: 20 },
+            { duration: '1m', target: 20 },
+            { duration: '30s', target: 0 },
         ],
         spike: [
-            { duration: '20s', target: 50 },      // Lonjakan cepat
-            { duration: '1m', target: 50 },       // TAHAN di puncak (Kunci agar P99 keluar)
-            { duration: '20s', target: 0 },       // Penurunan
+            { duration: '20s', target: 50 },
+            { duration: '1m', target: 50 },
+            { duration: '20s', target: 0 },
         ],
-        endurance: { vus: 5, duration: '5m' },    // Minimal 5 menit untuk melihat gejala Memory Leak/Std Dev
+        endurance: { vus: 5, duration: '2m' },
         scalability: [
             { duration: '1m', target: 5 },
             { duration: '1m', target: 15 },
             { duration: '1m', target: 30 },
         ],
     };
-
     return scenarios[type] || scenarios.performance;
 };

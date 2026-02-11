@@ -1,23 +1,29 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: 1. Buat struktur folder jika belum ada
+:: Buat struktur folder jika belum ada
 if not exist "Reports\html" mkdir "Reports\html"
-if not exist "Reports\csv" mkdir "Reports\scv"
+if not exist "Reports\csv" mkdir "Reports\csv"
 if not exist "Reports\json" mkdir "Reports\json"
 
+echo ==========================================
 echo Starting Pushmit Automated Suite...
+echo ==========================================
 
-:: Daftar skenario yang akan dijalankan
+:: BERSIHKAN file sisa dari proses sebelumnya yang di-terminate paksa
+del summary_*.html >nul 2>&1
+del summary_*.json >nul 2>&1
+
 set scenarios=performance load stress spike endurance scalability
 
 for %%s in (%scenarios%) do (
-    echo Running %%s test...
+    echo [RUNNING] %%s test...
     
-    :: Jalankan k6 dengan output CSV
+    :: Jalankan k6
     k6 run -e TYPE=%%s --out csv=Reports\CSV\report_%%s.csv test-script.js
     
-    :: Pindahkan file HTML dan JSON yang dihasilkan k6 ke folder masing-masing
+    :: Pindahkan file hanya jika file tersebut muncul (berhasil digenerate k6)
+    timeout /t 1 >nul
     if exist summary_%%s.html (
         move /y summary_%%s.html Reports\HTML\Laporan_%%s.html >nul
     )
@@ -25,9 +31,10 @@ for %%s in (%scenarios%) do (
         move /y summary_%%s.json Reports\JSON\data_%%s.json >nul
     )
     
-    echo %%s test completed.
-    echo --------------------------------------
+    echo [OK] %%s test completed.
+    echo ------------------------------------------
 )
 
-echo All tests finished! Check the "Reports" folder.
+echo.
+echo SEMUA PENGUJIAN SELESAI!
 pause

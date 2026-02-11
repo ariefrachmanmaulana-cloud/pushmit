@@ -7,97 +7,115 @@ export const options = {
     stages: Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE) : undefined,
     vus: !Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE).vus : undefined,
     duration: !Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE).duration : undefined,
-    
-    // Konfigurasi aman untuk semua versi k6
+    thresholds: {
+        'http_req_duration': [`p(95)<${CONFIG.thresholds[__ENV.TYPE].http_req_duration}`],
+        'http_req_failed': [`rate<${CONFIG.thresholds[__ENV.TYPE].http_req_failed}`],
+    },
     summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(95)', 'p(99)'],
 };
 
-// SETUP: Menangani login jika CONFIG.requireAuth bernilai true
 export function setup() {
     if (CONFIG.requireAuth) {
         const payload = JSON.stringify(CONFIG.authDetails.credentials);
         const params = { headers: { 'Content-Type': 'application/json' } };
         const res = http.post(CONFIG.authDetails.loginUrl, payload, params);
-        
-        const loginOk = check(res, { 'Login Berhasil': (r) => r.status === 200 });
-        // Mengirim data cookies ke fungsi default
-        return { cookies: res.cookies, loggedIn: loginOk };
+        return { cookies: res.cookies, loggedIn: res.status === 200 };
     }
     return { loggedIn: false };
 }
 
 export default function (data) {
-    // Jika login diperlukan, sertakan cookies dalam request
     const params = data.loggedIn ? { cookies: data.cookies } : {};
     const res = http.get(CONFIG.targetUrl, params);
-    
     check(res, { 'status is 200': (r) => r.status === 200 });
     sleep(1);
 }
 
 export function handleSummary(data) {
-    const getMetric = (val, suffix = " ms") => {
-        return (val !== undefined && val !== null) ? val.toFixed(2) + suffix : "N/A";
-    };
+    const type = __ENV.TYPE;
+    const limit = CONFIG.thresholds[type].http_req_duration;
+    const typeTitle = type.charAt(0).toUpperCase() + type.slice(1);
+    const targetUrl = CONFIG.targetUrl;
 
-    const successRateNum = (data.metrics.checks.values.passes / (data.metrics.checks.values.passes + data.metrics.checks.values.fails) * 100) || 0;
-    const successRate = getMetric(successRateNum, "%");
-    const avgRes = getMetric(data.metrics.http_req_duration.values.avg);
-    const p95Res = getMetric(data.metrics.http_req_duration.values['p(95)']);
-    const maxRes = getMetric(data.metrics.http_req_duration.values.max);
-    const totalReq = data.metrics.http_reqs.values.count;
-    const maxVus = data.metrics.vus ? data.metrics.vus.values.max : data.metrics.vus_max.values.max;
-    const date = new Date().toLocaleString();
+    // 1. DURASI PENGUJIAN & TABEL SKENARIO
+    const scenarioDef = getScenarios(type);
+    let displayDuration = "";
+    let stageTableRows = "";
 
-    // Logika Status
-    const isSuccess = successRateNum >= 95;
-    const statusLabel = isSuccess ? "✅ SISTEM STABIL" : "⚠️ PERLU ANALISA";
-    const statusBg = isSuccess ? "#27ae60" : "#e74c3c";
-    const statusColor = isSuccess ? "#27ae60" : "#e74c3c";
-
-    let specificRows = "";
-    const sc = getScenarios(__ENV.TYPE);
-    const testDuration = (typeof sc === 'object' && sc.duration) ? sc.duration : "Berdasarkan Tahapan";
-
-    // Tabel Tahapan (Stages)
-    let stagesInfo = "";
-    if (Array.isArray(sc)) {
-        stagesInfo = `
-        <div class="detail-section">
-            <h2>📈 Detail Tahapan Pengujian (Stages)</h2>
-            <table>
-                <thead>
-                    <tr><th>Fase Ke-</th><th>Durasi</th><th>Target User</th></tr>
-                </thead>
-                <tbody>
-                    ${sc.map((s, i) => `<tr><td>Fase ${i + 1}</td><td>${s.duration}</td><td>${s.target} VUs</td></tr>`).join('')}
-                </tbody>
-            </table>
-        </div>`;
+    if (Array.isArray(scenarioDef)) {
+        const totalSeconds = scenarioDef.reduce((acc, stage) => {
+            let durationStr = stage.duration;
+            let value = parseInt(durationStr);
+            return acc + (durationStr.includes('m') ? value * 60 : value);
+        }, 0);
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = totalSeconds % 60;
+        displayDuration = mins > 0 ? `${mins} Menit ${secs} Detik` : `${secs} Detik`;
+        
+        stageTableRows = scenarioDef.map((s, i) => `
+            <tr>
+                <td>Iteration ${i + 1}</td>
+                <td>${s.duration}</td>
+                <td>${s.target} VUs</td>
+            </tr>
+        `).join('');
+    } else {
+        displayDuration = scenarioDef.duration.replace('s', ' Detik').replace('m', ' Menit');
     }
 
-    // Penentuan Baris Spesifik berdasarkan Mode
-    switch (__ENV.TYPE) {
-        case 'performance':
-            specificRows = `<tr><td><b>Min Latency</b></td><td>${getMetric(data.metrics.http_req_duration.values.min)}</td><td>Respon tercepat sistem.</td></tr>`;
-            break;
-        case 'load':
-            specificRows = `<tr><td><b>Median Respon</b></td><td>${getMetric(data.metrics.http_req_duration.values.med)}</td><td>Nilai tengah kecepatan.</td></tr>`;
-            break;
-        case 'stress':
-            specificRows = `<tr><td><b>Error Rate</b></td><td style="color:#e74c3c; font-weight:bold;">${getMetric(100 - successRateNum, "%")}</td><td>Tingkat kegagalan beban puncak.</td></tr>`;
-            break;
-        case 'spike':
-            specificRows = `<tr><td><b>P99 Latency</b></td><td style="color:#e74c3c; font-weight:bold;">${getMetric(data.metrics.http_req_duration.values['p(99)'])}</td><td>Respon 1% user paling lambat.</td></tr>`;
-            break;
-        case 'endurance':
-            specificRows = `<tr><td><b>Stability (P95)</b></td><td>${p95Res}</td><td>Konsistensi performa jangka panjang.</td></tr>`;
-            break;
-        case 'scalability':
-            const runDuration = data.state.testRunDurationMs || 1000;
-            const rps = totalReq / (runDuration / 1000);
-            specificRows = `<tr><td><b>Throughput</b></td><td>${getMetric(rps, " RPS")}</td><td>Request per detik.</td></tr>`;
-            break;
+    // 2. KALKULASI METRIK UTAMA
+    const p95 = data.metrics.http_req_duration.values['p(95)'];
+    const avg = data.metrics.http_req_duration.values.avg;
+    const min = data.metrics.http_req_duration.values.min;
+    const max = data.metrics.http_req_duration.values.max;
+    const successRate = (data.metrics.checks.values.passes / (data.metrics.checks.values.passes + data.metrics.checks.values.fails) * 100) || 0;
+    const totalRequests = data.metrics.http_reqs.values.count;
+    const rps = (totalRequests / (data.state.testRunDurationMs / 1000)).toFixed(2);
+    const dataMB = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
+    
+    const isSuccess = p95 <= limit && successRate >= 95;
+
+    // 3. ANALISA TEMUAN & REKOMENDASI (QA PERSPECTIVE)
+    let riskMitigationContent = "";
+    if (!isSuccess) {
+        riskMitigationContent = `
+        <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
+            <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
+            <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
+                <p style="margin-top: 0;">Sistem terindikasi mengalami degradasi performa saat pengujian <b>${typeTitle}</b> dilakukan. Latensi P95 menyentuh angka <b>${p95.toFixed(0)}ms</b>, yang berarti mayoritas permintaan gagal memenuhi target SLA yang telah ditentukan.</p>
+                
+                <table style="border: none; margin-top: 10px;">
+                    <tr style="background: #fdf2f2;">
+                        <td style="width: 50%; border: 1px solid #fadad7;"><b>Kemungkinan Penyebab:</b></td>
+                        <td style="width: 50%; border: 1px solid #fadad7;"><b>Langkah Perbaikan:</b></td>
+                    </tr>
+                    <tr>
+                        <td style="border: 1px solid #eee; vertical-align: top;">
+                            <ul style="padding-left: 20px;">
+                                <li>Respon layanan melambat akibat beban pemrosesan data yang tidak efisien.</li>
+                                <li>Sumber daya server tidak mencukupi untuk menangani lonjakan pengguna secara bersamaan.</li>
+                                <li>Terdapat indikasi kegagalan sistem dalam mempertahankan stabilitas saat menerima beban konstan.</li>
+                            </ul>
+                        </td>
+                        <td style="border: 1px solid #eee; vertical-align: top;">
+                            <ul style="padding-left: 20px;">
+                                <li>Melakukan tinjauan ulang pada logika kode atau optimasi query database.</li>
+                                <li>Mempertimbangkan peningkatan kapasitas (scaling) pada sisi CPU atau RAM.</li>
+                                <li>Menerapkan mekanisme caching untuk mengurangi beban langsung pada sistem inti.</li>
+                            </ul>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>`;
+    } else {
+        riskMitigationContent = `
+        <div style="margin-top: 25px; border: 1px solid #27ae60; border-radius: 8px; overflow: hidden;">
+            <div style="background: #27ae60; color: white; padding: 12px; font-weight: bold;">✅ PERFORMANCE SUMMARY</div>
+            <div style="padding: 15px; background: #fff; font-size: 13px;">
+                Secara keseluruhan, sistem berada dalam kondisi stabil. Tidak ditemukan kendala performa saat melayani <b>${totalRequests} permintaan</b>. Kapasitas server saat ini masih sangat memadai untuk menangani beban tersebut.
+            </div>
+        </div>`;
     }
 
     const html = `
@@ -105,59 +123,91 @@ export function handleSummary(data) {
     <html>
     <head>
         <style>
-            body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; padding: 40px; color: #000; }
-            .container { max-width: 900px; margin: auto; background: white; padding: 40px; border-radius: 15px; border: 1px solid #ddd; position: relative; }
-            .status-banner { position: absolute; top: 20px; right: 40px; background: ${statusBg}; color: white; padding: 8px 20px; border-radius: 5px; font-weight: bold; font-size: 13px; }
-            .header { border-bottom: 2px solid #000; padding-bottom: 15px; margin-bottom: 30px; }
-            .header h1 { margin: 0; color: #000; text-transform: uppercase; font-size: 24px; }
-            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 30px; }
-            .card { background: #fff; padding: 15px; border: 1px solid #eee; text-align: center; }
-            .card h3 { margin: 0; font-size: 11px; color: #555; text-transform: uppercase; }
-            .card p { margin: 8px 0 0; font-size: 18px; font-weight: bold; color: #000; }
-            .detail-section { margin-top: 30px; }
-            .detail-section h2 { font-size: 16px; border-bottom: 1px solid #000; padding-bottom: 5px; margin-bottom: 15px; color: #000; }
-            table { width: 100%; border-collapse: collapse; }
-            th { background: #f9f9f9; text-align: left; padding: 10px; font-size: 12px; border: 1px solid #ddd; color: #000; }
-            td { padding: 10px; border: 1px solid #ddd; font-size: 13px; color: #000; }
-            .footer { margin-top: 50px; text-align: center; color: #777; font-size: 11px; border-top: 1px solid #eee; padding-top: 20px; }
+            body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f2f5; padding: 20px; color: #333; }
+            .container { max-width: 850px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { border-bottom: 2px solid #eee; padding-bottom: 20px; position: relative; }
+            .status { position: absolute; top: 0; right: 0; background: ${isSuccess ? '#27ae60' : '#e74c3c'}; color: #fff; padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 13px; }
+            .meta-info { margin-top: 10px; font-size: 13px; color: #666; line-height: 1.6; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 25px 0; }
+            .card { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #eee; }
+            .card small { font-size: 10px; color: #777; text-transform: uppercase; display: block; margin-bottom: 5px; font-weight: bold; }
+            h3 { font-size: 16px; margin-top: 25px; border-left: 4px solid #3498db; padding-left: 10px; color: #2c3e50; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th { text-align: left; padding: 12px; background: #f8f9fa; border-bottom: 2px solid #eee; font-size: 11px; color: #7f8c8d; }
+            td { padding: 12px; border-bottom: 1px solid #eee; font-size: 12px; }
+            .failed { color: #e74c3c; font-weight: bold; }
+            .success { color: #27ae60; font-weight: bold; }
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="status-banner">${statusLabel}</div>
             <div class="header">
-                <h1>${__ENV.TYPE.toUpperCase()} TEST REPORT</h1>
-                <p style="margin: 5px 0 0; color: #000;">Target: ${CONFIG.targetUrl} (Auth: ${CONFIG.requireAuth ? 'YES' : 'NO'})</p>
-                <small>📅 ${date} | ⏱️ Konfigurasi: ${testDuration}</small>
+                <h2 style="margin:0;">Performance Test Report: ${typeTitle}</h2>
+                <div class="meta-info">
+                    🌐 <b>Target URL:</b> ${targetUrl}<br>
+                    ⏱️ <b>Duration:</b> ${displayDuration} | 📅 ${new Date().toLocaleString('id-ID')}
+                </div>
+                <div class="status">${isSuccess ? "TEST PASSED" : "TEST FAILED"}</div>
             </div>
-            
+
             <div class="grid">
-                <div class="card"><h3>Peak VUs</h3><p>${maxVus}</p></div>
-                <div class="card"><h3>Success Rate</h3><p style="color: ${statusColor};">${successRate}</p></div>
-                <div class="card"><h3>Avg Latency</h3><p>${avgRes}</p></div>
-                <div class="card"><h3>Total Req</h3><p>${totalReq}</p></div>
+                <div class="card"><small>Max VUs</small><div><b>${data.metrics.vus ? data.metrics.vus.values.max : data.metrics.vus_max.values.max} Users</b></div></div>
+                <div class="card"><small>Success Rate</small><div class="${successRate < 95 ? 'failed' : 'success'}"><b>${successRate.toFixed(1)}%</b></div></div>
+                <div class="card"><small>Avg Latency</small><div><b>${avg.toFixed(0)} ms</b></div></div>
+                <div class="card"><small>Total Requests</small><div><b>${totalRequests}</b></div></div>
             </div>
 
-            ${stagesInfo}
+            ${riskMitigationContent}
 
-            <div class="detail-section">
-                <h2>📊 Statistik Kecepatan Khusus</h2>
-                <table>
-                    <thead><tr><th>Metrik</th><th>Hasil</th><th>Keterangan</th></tr></thead>
-                    <tbody>
-                        ${specificRows}
-                        <tr><td><b>P95 Latency</b></td><td>${p95Res}</td><td>Standar mayoritas user.</td></tr>
-                        <tr><td><b>Max Latency</b></td><td>${maxRes}</td><td>Respon terlama.</td></tr>
-                    </tbody>
-                </table>
+            ${stageTableRows ? `
+            <h3>🪜 Test Scenarios (Stages)</h3>
+            <table>
+                <thead><tr><th>Sequence</th><th>Duration</th><th>Load Target</th></tr></thead>
+                <tbody>${stageTableRows}</tbody>
+            </table>` : ''}
+
+            <h3>📊 Key Performance Indicators</h3>
+            <table>
+                <thead>
+                    <tr><th>Parameter</th><th>Actual Results</th><th>SLA/Threshold</th><th>Analysis</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><b>P95 Latency</b></td>
+                        <td class="${p95 > limit ? 'failed' : 'success'}">${p95.toFixed(0)} ms</td>
+                        <td>${limit} ms</td>
+                        <td>${p95 > limit ? 'SLA Breached' : 'Within Limits'}</td>
+                    </tr>
+                    <tr>
+                        <td><b>Latency (Min/Max)</b></td>
+                        <td>${min.toFixed(0)} / ${max.toFixed(0)} ms</td>
+                        <td>N/A</td>
+                        <td>Rentang waktu respon terkecil dan terbesar.</td>
+                    </tr>
+                    <tr>
+                        <td><b>Throughput (RPS)</b></td>
+                        <td><b>${rps} req/s</b></td>
+                        <td>N/A</td>
+                        <td>Kecepatan sistem dalam melayani permintaan.</td>
+                    </tr>
+                    <tr>
+                        <td><b>Data Transfer</b></td>
+                        <td>${dataMB} MB</td>
+                        <td>N/A</td>
+                        <td>Total volume data yang diproses.</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div style="text-align: center; margin-top: 40px; font-size: 10px; color: #bbb;">
+                Pushmit Performance Analytics System
             </div>
-            <div class="footer">Dibuat otomatis oleh Pushmit (Push to The Limit) &bull; Analis: Arief Rachman Maulana &bull; Mode: ${__ENV.TYPE}</div>
         </div>
     </body>
     </html>`;
 
     return {
-        [`summary_${__ENV.TYPE}.html`]: html,
-        [`summary_${__ENV.TYPE}.json`]: JSON.stringify(data),
+        [`summary_${type}.html`]: html,
+        [`summary_${type}.json`]: JSON.stringify(data),
     };
 }
