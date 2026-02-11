@@ -1,19 +1,21 @@
 import http from 'k6/http';
 import { sleep, check } from 'k6';
 import { CONFIG } from './config.js';
-import { getScenarios } from './scenarios.js';
+import { getScenarios, getThresholds } from './scenarios.js';
 
+// KONFIGURASI PENGUJIAN
 export const options = {
     stages: Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE) : undefined,
     vus: !Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE).vus : undefined,
     duration: !Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE).duration : undefined,
     thresholds: {
-        'http_req_duration': [`p(95)<${CONFIG.thresholds[__ENV.TYPE].http_req_duration}`],
-        'http_req_failed': [`rate<${CONFIG.thresholds[__ENV.TYPE].http_req_failed}`],
+        'http_req_duration': [`p(95)<${getThresholds(__ENV.TYPE).http_req_duration}`],
+        'http_req_failed': [`rate<${getThresholds(__ENV.TYPE).http_req_failed}`],
     },
     summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(95)', 'p(99)'],
 };
 
+// TAHAP PERSIAPAN (AUTH)
 export function setup() {
     if (CONFIG.requireAuth) {
         const payload = JSON.stringify(CONFIG.authDetails.credentials);
@@ -24,6 +26,7 @@ export function setup() {
     return { loggedIn: false };
 }
 
+// SKENARIO EKSEKUSI UTAMA
 export default function (data) {
     const params = data.loggedIn ? { cookies: data.cookies } : {};
     const res = http.get(CONFIG.targetUrl, params);
@@ -31,9 +34,11 @@ export default function (data) {
     sleep(1);
 }
 
+// PENGOLAHAN LAPORAN AKHIR
 export function handleSummary(data) {
-    const type = __ENV.TYPE;
-    const limit = CONFIG.thresholds[type].http_req_duration;
+    const type = __ENV.TYPE || 'performance';
+    const thresholds = getThresholds(type);
+    const limit = thresholds.http_req_duration; // Mengambil limit durasi dari scenarios.js
     const typeTitle = type.charAt(0).toUpperCase() + type.slice(1);
     const targetUrl = CONFIG.targetUrl;
 
@@ -73,35 +78,33 @@ export function handleSummary(data) {
     const rps = (totalRequests / (data.state.testRunDurationMs / 1000)).toFixed(2);
     const dataMB = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
     
+    // Status Kelulusan Berdasarkan Threshold dan Success Rate
     const isSuccess = p95 <= limit && successRate >= 95;
 
-    // 3. ANALISA TEMUAN & REKOMENDASI (QA PERSPECTIVE)
+    // 3. ANALISA TEMUAN & REKOMENDASI
     let riskMitigationContent = "";
     if (!isSuccess) {
         riskMitigationContent = `
         <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
             <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
             <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
-                <p style="margin-top: 0;">Sistem terindikasi mengalami degradasi performa saat pengujian <b>${typeTitle}</b> dilakukan. Latensi P95 menyentuh angka <b>${p95.toFixed(0)}ms</b>, yang berarti mayoritas permintaan gagal memenuhi target SLA yang telah ditentukan.</p>
-                
-                <table style="border: none; margin-top: 10px;">
+                <p style="margin-top: 0;">Sistem terindikasi mengalami degradasi performa saat pengujian <b>${typeTitle}</b> dilakukan. Latensi P95 menyentuh angka <b>${p95.toFixed(0)}ms</b>, melampaui batas SLA <b>${limit}ms</b>.</p>
+                <table style="border: none; margin-top: 10px; width: 100%;">
                     <tr style="background: #fdf2f2;">
-                        <td style="width: 50%; border: 1px solid #fadad7;"><b>Kemungkinan Penyebab:</b></td>
-                        <td style="width: 50%; border: 1px solid #fadad7;"><b>Langkah Perbaikan:</b></td>
+                        <td style="width: 50%; border: 1px solid #fadad7; padding: 10px;"><b>Kemungkinan Penyebab:</b></td>
+                        <td style="width: 50%; border: 1px solid #fadad7; padding: 10px;"><b>Langkah Perbaikan:</b></td>
                     </tr>
                     <tr>
-                        <td style="border: 1px solid #eee; vertical-align: top;">
-                            <ul style="padding-left: 20px;">
-                                <li>Respon layanan melambat akibat beban pemrosesan data yang tidak efisien.</li>
-                                <li>Sumber daya server tidak mencukupi untuk menangani lonjakan pengguna secara bersamaan.</li>
-                                <li>Terdapat indikasi kegagalan sistem dalam mempertahankan stabilitas saat menerima beban konstan.</li>
+                        <td style="border: 1px solid #eee; vertical-align: top; padding: 10px;">
+                            <ul style="padding-left: 20px; margin: 0;">
+                                <li>Beban pemrosesan data tidak efisien pada endpoint dashboard.</li>
+                                <li>Keterbatasan sumber daya CPU/RAM pada server target.</li>
                             </ul>
                         </td>
-                        <td style="border: 1px solid #eee; vertical-align: top;">
-                            <ul style="padding-left: 20px;">
-                                <li>Melakukan tinjauan ulang pada logika kode atau optimasi query database.</li>
-                                <li>Mempertimbangkan peningkatan kapasitas (scaling) pada sisi CPU atau RAM.</li>
-                                <li>Menerapkan mekanisme caching untuk mengurangi beban langsung pada sistem inti.</li>
+                        <td style="border: 1px solid #eee; vertical-align: top; padding: 10px;">
+                            <ul style="padding-left: 20px; margin: 0;">
+                                <li>Optimasi query database atau efisiensi logika kode.</li>
+                                <li>Penerapan mekanisne caching untuk data statis.</li>
                             </ul>
                         </td>
                     </tr>
@@ -113,15 +116,16 @@ export function handleSummary(data) {
         <div style="margin-top: 25px; border: 1px solid #27ae60; border-radius: 8px; overflow: hidden;">
             <div style="background: #27ae60; color: white; padding: 12px; font-weight: bold;">✅ PERFORMANCE SUMMARY</div>
             <div style="padding: 15px; background: #fff; font-size: 13px;">
-                Secara keseluruhan, sistem berada dalam kondisi stabil. Tidak ditemukan kendala performa saat melayani <b>${totalRequests} permintaan</b>. Kapasitas server saat ini masih sangat memadai untuk menangani beban tersebut.
+                Secara keseluruhan, sistem berada dalam kondisi stabil. Tidak ditemukan kendala performa berarti saat melayani <b>${totalRequests} permintaan</b>.
             </div>
         </div>`;
     }
 
     const html = `
     <!DOCTYPE html>
-    <html>
+    <html lang="id">
     <head>
+        <meta charset="UTF-8">
         <style>
             body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f2f5; padding: 20px; color: #333; }
             .container { max-width: 850px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -142,7 +146,7 @@ export function handleSummary(data) {
     <body>
         <div class="container">
             <div class="header">
-                <h2 style="margin:0;">Performance Test Report: ${typeTitle}</h2>
+                <h2 style="margin:0;">Test Report: ${typeTitle}</h2>
                 <div class="meta-info">
                     🌐 <b>Target URL:</b> ${targetUrl}<br>
                     ⏱️ <b>Duration:</b> ${displayDuration} | 📅 ${new Date().toLocaleString('id-ID')}
@@ -179,22 +183,16 @@ export function handleSummary(data) {
                         <td>${p95 > limit ? 'SLA Breached' : 'Within Limits'}</td>
                     </tr>
                     <tr>
-                        <td><b>Latency (Min/Max)</b></td>
-                        <td>${min.toFixed(0)} / ${max.toFixed(0)} ms</td>
-                        <td>N/A</td>
-                        <td>Rentang waktu respon terkecil dan terbesar.</td>
-                    </tr>
-                    <tr>
                         <td><b>Throughput (RPS)</b></td>
                         <td><b>${rps} req/s</b></td>
                         <td>N/A</td>
-                        <td>Kecepatan sistem dalam melayani permintaan.</td>
+                        <td>Kapasitas proses per detik.</td>
                     </tr>
                     <tr>
                         <td><b>Data Transfer</b></td>
                         <td>${dataMB} MB</td>
                         <td>N/A</td>
-                        <td>Total volume data yang diproses.</td>
+                        <td>Total volume data.</td>
                     </tr>
                 </tbody>
             </table>
