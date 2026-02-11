@@ -1,0 +1,8 @@
+# Laporan hasil test (agar tidak memenuhi repo)
+Reports/
+*.html
+*.json
+
+# OS files
+.DS_Store
+Thumbs.db
