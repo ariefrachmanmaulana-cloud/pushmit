@@ -42,6 +42,9 @@ export function handleSummary(data) {
     const typeTitle = type.charAt(0).toUpperCase() + type.slice(1);
     const targetUrl = CONFIG.targetUrl;
 
+    // --- TAMBAHAN INFORMASI AUTH ---
+    const authStatus = CONFIG.requireAuth ? "Yes" : "No";
+
     // 1. DURASI PENGUJIAN & TABEL SKENARIO
     const scenarioDef = getScenarios(type);
     let displayDuration = "";
@@ -148,6 +151,7 @@ export function handleSummary(data) {
             <div class="header">
                 <h2 style="margin:0;">Test Report: ${typeTitle}</h2>
                 <div class="meta-info">
+                    🔐 <b>Auth:</b> ${authStatus}<br>
                     🌐 <b>Target URL:</b> ${targetUrl}<br>
                     ⏱️ <b>Duration:</b> ${displayDuration} | 📅 ${new Date().toLocaleString('id-ID')}
                 </div>

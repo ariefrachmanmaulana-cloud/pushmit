@@ -1,16 +1,17 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Buat struktur folder jika belum ada
-if not exist "Reports\html" mkdir "Reports\html"
-if not exist "Reports\csv" mkdir "Reports\csv"
-if not exist "Reports\json" mkdir "Reports\json"
+:: 1. HAPUS DAN BUAT ULANG STRUKTUR FOLDER (UNTUK MEMASTIKAN BERSIH)
+if exist "Reports" rd /s /q "Reports"
+mkdir "Reports\HTML"
+mkdir "Reports\CSV"
+mkdir "Reports\JSON"
 
 echo ==========================================
 echo Starting Pushmit Automated Suite...
 echo ==========================================
 
-:: BERSIHKAN file sisa dari proses sebelumnya yang di-terminate paksa
+:: 2. BERSIHKAN FILE SISA DI ROOT
 del summary_*.html >nul 2>&1
 del summary_*.json >nul 2>&1
 
@@ -19,11 +20,12 @@ set scenarios=performance load stress spike endurance scalability
 for %%s in (%scenarios%) do (
     echo [RUNNING] %%s test...
     
-    :: Jalankan k6
+    :: 3. EKSEKUSI K6 DENGAN PATH YANG DISESUAIKAN (UPPERCASE)
     k6 run -e TYPE=%%s --out csv=Reports\CSV\report_%%s.csv test-script.js
     
-    :: Pindahkan file hanya jika file tersebut muncul (berhasil digenerate k6)
     timeout /t 1 >nul
+    
+    :: 4. PEMINDAHAN HASIL KE FOLDER YANG TEPAT
     if exist summary_%%s.html (
         move /y summary_%%s.html Reports\HTML\Laporan_%%s.html >nul
     )

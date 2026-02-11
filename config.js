@@ -1,5 +1,5 @@
 export const CONFIG = {
-    targetUrl: 'https://fastingmate.my.id/dashboard',
+    targetUrl: 'https://japantrips.id',
     requireAuth: false,
     authDetails: {
         loginUrl: 'https://fastingmate.my.id/login',
