@@ -45,4 +45,4 @@ Setelah running selesai, cek folder untuk file berikut:
 ## 🛠️ Maintenance
 * **Ganti Website**: Buka `config.js` -> ubah `targetUrl`.
 * **Naikkan Jumlah User**: Buka `scenarios.js` -> ubah nilai `target` atau `vus`.
-* **Ubah Syarat Lulus**: Buka `config.js` -> ubah `thresholds` (misal: durasi respon maksimal).
+* **Ubah Syarat Lulus**: Buka `scenarios.js` -> ubah `thresholds` (misal: durasi respon maksimal).

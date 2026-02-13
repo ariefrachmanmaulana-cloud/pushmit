@@ -7,7 +7,7 @@ export const getScenarios = (type) => {
     const scenarios = {
         // 1. PERFORMANCE: Mengukur kecepatan dasar (baseline)
         performance: { 
-            vus: 1, 
+            vus: 2, 
             duration: '30s' 
         },
 

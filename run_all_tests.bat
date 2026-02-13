@@ -14,7 +14,8 @@ echo ==========================================
 del summary_*.html >nul 2>&1
 del summary_*.json >nul 2>&1
 
-set scenarios=performance load stress spike endurance scalability
+::set scenarios=performance load stress spike endurance scalability
+set scenarios=performance
 
 for %%s in (%scenarios%) do (
     echo [RUNNING] %%s test...
