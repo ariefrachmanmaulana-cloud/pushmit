@@ -1,9 +1,8 @@
 import http from 'k6/http';
-import { sleep, check } from 'k6';
+import { sleep, check, group } from 'k6';
 import { CONFIG } from './config.js';
 import { getScenarios, getThresholds } from './scenarios.js';
 
-// KONFIGURASI PENGUJIAN
 export const options = {
     stages: Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE) : undefined,
     vus: !Array.isArray(getScenarios(__ENV.TYPE)) ? getScenarios(__ENV.TYPE).vus : undefined,
@@ -15,37 +14,84 @@ export const options = {
     summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(95)', 'p(99)'],
 };
 
-// TAHAP PERSIAPAN (AUTH)
 export function setup() {
     if (CONFIG.requireAuth) {
         const payload = JSON.stringify(CONFIG.authDetails.credentials);
         const params = { headers: { 'Content-Type': 'application/json' } };
         const res = http.post(CONFIG.authDetails.loginUrl, payload, params);
-        return { cookies: res.cookies, loggedIn: res.status === 200 };
+        
+        const loggedIn = res.status === 200 || res.status === 201;
+        return { cookies: res.cookies, loggedIn: loggedIn };
     }
     return { loggedIn: false };
 }
 
-// SKENARIO EKSEKUSI UTAMA
 export default function (data) {
     const params = data.loggedIn ? { cookies: data.cookies } : {};
-    const res = http.get(CONFIG.targetUrl, params);
-    check(res, { 'status is 200': (r) => r.status === 200 });
+    
+    const endpointIndex = __ITER % CONFIG.endpoints.length;
+    const path = CONFIG.endpoints[endpointIndex];
+    const fullUrl = `${CONFIG.authDetails.baseUrl || ''}${path}`;
+
+    group(path, function () {
+        const res = http.get(fullUrl, params);
+        check(res, {
+            'status is 200': (r) => r.status === 200,
+        });
+    });
+
     sleep(1);
 }
 
-// PENGOLAHAN LAPORAN AKHIR
 export function handleSummary(data) {
     const type = __ENV.TYPE || 'performance';
     const thresholds = getThresholds(type);
-    const limit = thresholds.http_req_duration; // Mengambil limit durasi dari scenarios.js
+    const limit = thresholds.http_req_duration;
     const typeTitle = type.charAt(0).toUpperCase() + type.slice(1);
-    const targetUrl = CONFIG.targetUrl;
-
-    // --- TAMBAHAN INFORMASI AUTH ---
+    const targetUrl = CONFIG.authDetails.baseUrl || CONFIG.targetUrl;
     const authStatus = CONFIG.requireAuth ? "Yes" : "No";
 
-    // 1. DURASI PENGUJIAN & TABEL SKENARIO
+    // 1. HITUNG ULANG TOTAL DARI GROUPS AGAR SINKRON
+    let endpointRows = "";
+    let totalPasses = 0;
+    let totalFails = 0;
+    const groups = data.root_group.groups;
+    
+    groups.forEach((grp) => {
+        if (grp.name === 'setup') return;
+
+        const passes = grp.checks.reduce((acc, c) => acc + c.passes, 0);
+        const fails = grp.checks.reduce((acc, c) => acc + c.fails, 0);
+        
+        totalPasses += passes;
+        totalFails += fails;
+        
+        const total = passes + fails;
+        const sRate = total > 0 ? ((passes / total) * 100).toFixed(1) : 0;
+        
+        endpointRows += `
+            <tr>
+                <td style="font-family: monospace; color: #2980b9;">${grp.name}</td>
+                <td>${passes}</td>
+                <td class="${fails > 0 ? 'failed' : ''}">${fails}</td>
+                <td><b class="${sRate < 95 ? 'failed' : 'success'}">${sRate}%</b></td>
+            </tr>`;
+    });
+
+    // 2. KALKULASI METRIK UTAMA BERDASARKAN HASIL GRUP
+    const p95 = data.metrics.http_req_duration.values['p(95)'];
+    const avg = data.metrics.http_req_duration.values.avg;
+    
+    // Sinkronisasi angka Total Requests dan Success Rate
+    const totalRequests = totalPasses + totalFails;
+    const successRate = totalRequests > 0 ? (totalPasses / totalRequests * 100) : 0;
+    
+    const rps = (totalRequests / (data.state.testRunDurationMs / 1000)).toFixed(2);
+    const dataMB = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
+    
+    const isSuccess = p95 <= limit && successRate >= 95;
+
+    // 3. SKENARIO & DURASI
     const scenarioDef = getScenarios(type);
     let displayDuration = "";
     let stageTableRows = "";
@@ -65,64 +111,25 @@ export function handleSummary(data) {
                 <td>Iteration ${i + 1}</td>
                 <td>${s.duration}</td>
                 <td>${s.target} VUs</td>
-            </tr>
-        `).join('');
+            </tr>`).join('');
     } else {
         displayDuration = scenarioDef.duration.replace('s', ' Detik').replace('m', ' Menit');
     }
 
-    // 2. KALKULASI METRIK UTAMA
-    const p95 = data.metrics.http_req_duration.values['p(95)'];
-    const avg = data.metrics.http_req_duration.values.avg;
-    const min = data.metrics.http_req_duration.values.min;
-    const max = data.metrics.http_req_duration.values.max;
-    const successRate = (data.metrics.checks.values.passes / (data.metrics.checks.values.passes + data.metrics.checks.values.fails) * 100) || 0;
-    const totalRequests = data.metrics.http_reqs.values.count;
-    const rps = (totalRequests / (data.state.testRunDurationMs / 1000)).toFixed(2);
-    const dataMB = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
-    
-    // Status Kelulusan Berdasarkan Threshold dan Success Rate
-    const isSuccess = p95 <= limit && successRate >= 95;
-
-    // 3. ANALISA TEMUAN & REKOMENDASI
-    let riskMitigationContent = "";
-    if (!isSuccess) {
-        riskMitigationContent = `
-        <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
-            <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
-            <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
-                <p style="margin-top: 0;">Sistem terindikasi mengalami degradasi performa saat pengujian <b>${typeTitle}</b> dilakukan. Latensi P95 menyentuh angka <b>${p95.toFixed(0)}ms</b>, melampaui batas SLA <b>${limit}ms</b>.</p>
-                <table style="border: none; margin-top: 10px; width: 100%;">
-                    <tr style="background: #fdf2f2;">
-                        <td style="width: 50%; border: 1px solid #fadad7; padding: 10px;"><b>Kemungkinan Penyebab:</b></td>
-                        <td style="width: 50%; border: 1px solid #fadad7; padding: 10px;"><b>Langkah Perbaikan:</b></td>
-                    </tr>
-                    <tr>
-                        <td style="border: 1px solid #eee; vertical-align: top; padding: 10px;">
-                            <ul style="padding-left: 20px; margin: 0;">
-                                <li>Beban pemrosesan data tidak efisien pada endpoint dashboard.</li>
-                                <li>Keterbatasan sumber daya CPU/RAM pada server target.</li>
-                            </ul>
-                        </td>
-                        <td style="border: 1px solid #eee; vertical-align: top; padding: 10px;">
-                            <ul style="padding-left: 20px; margin: 0;">
-                                <li>Optimasi query database atau efisiensi logika kode.</li>
-                                <li>Penerapan mekanisne caching untuk data statis.</li>
-                            </ul>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </div>`;
-    } else {
-        riskMitigationContent = `
+    // 4. ANALISA TEMUAN
+    let riskMitigationContent = isSuccess ? `
         <div style="margin-top: 25px; border: 1px solid #27ae60; border-radius: 8px; overflow: hidden;">
             <div style="background: #27ae60; color: white; padding: 12px; font-weight: bold;">✅ PERFORMANCE SUMMARY</div>
             <div style="padding: 15px; background: #fff; font-size: 13px;">
-                Secara keseluruhan, sistem berada dalam kondisi stabil. Tidak ditemukan kendala performa berarti saat melayani <b>${totalRequests} permintaan</b>.
+                Sistem stabil. Data menunjukkan total <b>${totalRequests} request</b> pada endpoint target berhasil ditangani dengan baik.
+            </div>
+        </div>` : `
+        <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
+            <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
+            <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
+                <p>Terjadi degradasi performa. P95 Latency <b>${p95.toFixed(0)}ms</b> melampaui batas <b>${limit}ms</b>.</p>
             </div>
         </div>`;
-    }
 
     const html = `
     <!DOCTYPE html>
@@ -151,15 +158,14 @@ export function handleSummary(data) {
             <div class="header">
                 <h2 style="margin:0;">Test Report: ${typeTitle}</h2>
                 <div class="meta-info">
-                    🔐 <b>Auth:</b> ${authStatus}<br>
-                    🌐 <b>Target URL:</b> ${targetUrl}<br>
+                    🔐 <b>Auth:</b> ${authStatus} | 🌐 <b>Host:</b> ${targetUrl}<br>
                     ⏱️ <b>Duration:</b> ${displayDuration} | 📅 ${new Date().toLocaleString('id-ID')}
                 </div>
                 <div class="status">${isSuccess ? "TEST PASSED" : "TEST FAILED"}</div>
             </div>
 
             <div class="grid">
-                <div class="card"><small>Max VUs</small><div><b>${data.metrics.vus ? data.metrics.vus.values.max : data.metrics.vus_max.values.max} Users</b></div></div>
+                <div class="card"><small>Max VUs</small><div><b>${data.metrics.vus ? data.metrics.vus.values.max : data.metrics.vus_max.values.max}</b></div></div>
                 <div class="card"><small>Success Rate</small><div class="${successRate < 95 ? 'failed' : 'success'}"><b>${successRate.toFixed(1)}%</b></div></div>
                 <div class="card"><small>Avg Latency</small><div><b>${avg.toFixed(0)} ms</b></div></div>
                 <div class="card"><small>Total Requests</small><div><b>${totalRequests}</b></div></div>
@@ -167,43 +173,24 @@ export function handleSummary(data) {
 
             ${riskMitigationContent}
 
-            ${stageTableRows ? `
-            <h3>🪜 Test Scenarios (Stages)</h3>
+            <h3>📍 Endpoint Specific Details</h3>
             <table>
-                <thead><tr><th>Sequence</th><th>Duration</th><th>Load Target</th></tr></thead>
-                <tbody>${stageTableRows}</tbody>
-            </table>` : ''}
+                <thead>
+                    <tr><th>Path</th><th>Passed</th><th>Failed</th><th>Success Rate</th></tr>
+                </thead>
+                <tbody>${endpointRows}</tbody>
+            </table>
+
+            ${stageTableRows ? `<h3>🪜 Test Scenarios</h3><table><thead><tr><th>Sequence</th><th>Duration</th><th>Target</th></tr></thead><tbody>${stageTableRows}</tbody></table>` : ''}
 
             <h3>📊 Key Performance Indicators</h3>
             <table>
-                <thead>
-                    <tr><th>Parameter</th><th>Actual Results</th><th>SLA/Threshold</th><th>Analysis</th></tr>
-                </thead>
+                <thead><tr><th>Parameter</th><th>Actual Results</th><th>Threshold</th><th>Analysis</th></tr></thead>
                 <tbody>
-                    <tr>
-                        <td><b>P95 Latency</b></td>
-                        <td class="${p95 > limit ? 'failed' : 'success'}">${p95.toFixed(0)} ms</td>
-                        <td>${limit} ms</td>
-                        <td>${p95 > limit ? 'SLA Breached' : 'Within Limits'}</td>
-                    </tr>
-                    <tr>
-                        <td><b>Throughput (RPS)</b></td>
-                        <td><b>${rps} req/s</b></td>
-                        <td>N/A</td>
-                        <td>Kapasitas proses per detik.</td>
-                    </tr>
-                    <tr>
-                        <td><b>Data Transfer</b></td>
-                        <td>${dataMB} MB</td>
-                        <td>N/A</td>
-                        <td>Total volume data.</td>
-                    </tr>
+                    <tr><td><b>P95 Latency</b></td><td class="${p95 > limit ? 'failed' : 'success'}">${p95.toFixed(0)} ms</td><td>${limit} ms</td><td>${p95 > limit ? 'Breached' : 'OK'}</td></tr>
+                    <tr><td><b>Throughput</b></td><td><b>${rps} req/s</b></td><td>N/A</td><td>-</td></tr>
                 </tbody>
             </table>
-            
-            <div style="text-align: center; margin-top: 40px; font-size: 10px; color: #bbb;">
-                Pushmit Performance Analytics System
-            </div>
         </div>
     </body>
     </html>`;

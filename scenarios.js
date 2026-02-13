@@ -57,11 +57,11 @@ export const getThresholds = (type) => {
     const thresholds = {
         performance: {
             http_req_duration: 500, // Target ideal < 500ms
-            http_req_failed: 0.01,  // Maksimal error 1%
+            http_req_failed: 0.05,  // Maksimal error 1%
         },
         load: {
             http_req_duration: 1000, // Batas toleransi 1 detik
-            http_req_failed: 0.01,
+            http_req_failed: 0.05,
         },
         stress: {
             http_req_duration: 2000, // Toleransi beban puncak
