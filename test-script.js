@@ -78,20 +78,47 @@ export function handleSummary(data) {
             </tr>`;
     });
 
-    // 2. KALKULASI METRIK UTAMA BERDASARKAN HASIL GRUP
+    // 2. KALKULASI METRIK UTAMA
     const p95 = data.metrics.http_req_duration.values['p(95)'];
     const avg = data.metrics.http_req_duration.values.avg;
-    
-    // Sinkronisasi angka Total Requests dan Success Rate
     const totalRequests = totalPasses + totalFails;
     const successRate = totalRequests > 0 ? (totalPasses / totalRequests * 100) : 0;
-    
     const rps = (totalRequests / (data.state.testRunDurationMs / 1000)).toFixed(2);
-    const dataMB = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
-    
     const isSuccess = p95 <= limit && successRate >= 95;
 
-    // 3. SKENARIO & DURASI
+    // 3. LOGIKA DINAMIS KEY PERFORMANCE INDICATORS (KPI)
+    let kpiRows = `
+        <tr><td><b>P95 Latency</b></td><td class="${p95 > limit ? 'failed' : 'success'}">${p95.toFixed(0)} ms</td><td>${limit} ms</td><td>${p95 > limit ? 'Breached' : 'OK'}</td></tr>
+        <tr><td><b>Throughput</b></td><td><b>${rps} req/s</b></td><td>N/A</td><td>-</td></tr>
+    `;
+
+    if (type === 'stress' || type === 'spike') {
+        const failRate = data.metrics.http_req_failed.values.rate * 100;
+        kpiRows += `<tr><td><b>Error Rate</b></td><td class="${failRate > (thresholds.http_req_failed * 100) ? 'failed' : 'success'}">${failRate.toFixed(2)}%</td><td>${(thresholds.http_req_failed * 100)}%</td><td>Resilience Check</td></tr>`;
+    } else if (type === 'endurance') {
+        const dataReceived = (data.metrics.data_received.values.count / (1024 * 1024)).toFixed(2);
+        kpiRows += `<tr><td><b>Data Transferred</b></td><td>${dataReceived} MB</td><td>N/A</td><td>Stability Check</td></tr>`;
+    }else if (type === 'scalability') {
+        const maxVusValue = data.metrics.vus ? data.metrics.vus.values.max : (data.metrics.vus_max ? data.metrics.vus_max.values.max : 'N/A');
+        kpiRows += `<tr><td><b>Max Concurrent VUs</b></td><td><b>${maxVusValue} VUs</b></td><td>N/A</td><td>Scaling Limit</td></tr>`;
+    }
+
+    // 4. PERFORMANCE SUMMARY (RISK MITIGATION)
+    let riskMitigationContent = isSuccess ? `
+        <div style="margin-top: 25px; border: 1px solid #27ae60; border-radius: 8px; overflow: hidden;">
+            <div style="background: #27ae60; color: white; padding: 12px; font-weight: bold;">✅ PERFORMANCE SUMMARY</div>
+            <div style="padding: 15px; background: #fff; font-size: 13px;">
+                Sistem stabil. Data menunjukkan total <b>${totalRequests} request</b> pada endpoint target berhasil ditangani dengan baik tanpa kendala performa berarti.
+            </div>
+        </div>` : `
+        <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
+            <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
+            <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
+                <p>Terjadi degradasi performa pada tipe <b>${typeTitle}</b>. P95 Latency <b>${p95.toFixed(0)}ms</b> melampaui batas toleransi <b>${limit}ms</b>.</p>
+            </div>
+        </div>`;
+
+    // 5. SKENARIO & DURASI
     const scenarioDef = getScenarios(type);
     let displayDuration = "";
     let stageTableRows = "";
@@ -102,34 +129,11 @@ export function handleSummary(data) {
             let value = parseInt(durationStr);
             return acc + (durationStr.includes('m') ? value * 60 : value);
         }, 0);
-        const mins = Math.floor(totalSeconds / 60);
-        const secs = totalSeconds % 60;
-        displayDuration = mins > 0 ? `${mins} Menit ${secs} Detik` : `${secs} Detik`;
-        
-        stageTableRows = scenarioDef.map((s, i) => `
-            <tr>
-                <td>Iteration ${i + 1}</td>
-                <td>${s.duration}</td>
-                <td>${s.target} VUs</td>
-            </tr>`).join('');
+        displayDuration = `${Math.floor(totalSeconds / 60)} Menit ${totalSeconds % 60} Detik`;
+        stageTableRows = scenarioDef.map((s, i) => `<tr><td>Iteration ${i + 1}</td><td>${s.duration}</td><td>${s.target} VUs</td></tr>`).join('');
     } else {
         displayDuration = scenarioDef.duration.replace('s', ' Detik').replace('m', ' Menit');
     }
-
-    // 4. ANALISA TEMUAN
-    let riskMitigationContent = isSuccess ? `
-        <div style="margin-top: 25px; border: 1px solid #27ae60; border-radius: 8px; overflow: hidden;">
-            <div style="background: #27ae60; color: white; padding: 12px; font-weight: bold;">✅ PERFORMANCE SUMMARY</div>
-            <div style="padding: 15px; background: #fff; font-size: 13px;">
-                Sistem stabil. Data menunjukkan total <b>${totalRequests} request</b> pada endpoint target berhasil ditangani dengan baik.
-            </div>
-        </div>` : `
-        <div style="margin-top: 25px; border: 1px solid #e74c3c; border-radius: 8px; overflow: hidden;">
-            <div style="background: #e74c3c; color: white; padding: 12px; font-weight: bold;">⚠️ TEST FINDINGS & RECOMMENDATIONS</div>
-            <div style="padding: 15px; background: #fff; font-size: 13px; line-height: 1.6;">
-                <p>Terjadi degradasi performa. P95 Latency <b>${p95.toFixed(0)}ms</b> melampaui batas <b>${limit}ms</b>.</p>
-            </div>
-        </div>`;
 
     const html = `
     <!DOCTYPE html>
@@ -187,8 +191,7 @@ export function handleSummary(data) {
             <table>
                 <thead><tr><th>Parameter</th><th>Actual Results</th><th>Threshold</th><th>Analysis</th></tr></thead>
                 <tbody>
-                    <tr><td><b>P95 Latency</b></td><td class="${p95 > limit ? 'failed' : 'success'}">${p95.toFixed(0)} ms</td><td>${limit} ms</td><td>${p95 > limit ? 'Breached' : 'OK'}</td></tr>
-                    <tr><td><b>Throughput</b></td><td><b>${rps} req/s</b></td><td>N/A</td><td>-</td></tr>
+                    ${kpiRows}
                 </tbody>
             </table>
         </div>
